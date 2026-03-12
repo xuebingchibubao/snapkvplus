@@ -171,11 +171,11 @@ def llama_flash_attn2_forward(
 def prepare_inputs_for_generation_llama(
     self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
 ):
-    # [SnapKV] Store input_ids for sentence splitting in the first layer
+    # [SnapKV] Reset kv_seq_len at the start of generation
+    # Note: last_sentence_len should be set to model.config.last_sentence_len BEFORE calling generate()
     if past_key_values is None:
         for layer in self.model.layers:
             layer.self_attn.kv_seq_len = 0
-            layer.self_attn._last_input_ids = input_ids
     if past_key_values is not None:
         if isinstance(past_key_values, Cache):
             cache_length = past_key_values.get_seq_length()

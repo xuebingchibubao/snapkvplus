@@ -193,16 +193,11 @@ def mistral_flash_attn2_forward(
 def prepare_inputs_for_generation_mistral(
     self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
 ):
-    # [SnapKV] Extract last_sentence_len from kwargs if provided for dynamic observation window
-    last_sentence_len = kwargs.pop('last_sentence_len', 0)
-    
     # Omit tokens covered by past_key_values
     if past_key_values is None:
         for layer in self.model.layers:
             layer.self_attn.kv_seq_len = 0
-        # Store last_sentence_len in config so that layer 0 can access it
-        if last_sentence_len > 0:
-            self.config.last_sentence_len = last_sentence_len
+        # [SnapKV] Read last_sentence_len from config if it was set before generate()
     if past_key_values is not None:
         if isinstance(past_key_values, Cache):
             cache_length = past_key_values.get_seq_length()
