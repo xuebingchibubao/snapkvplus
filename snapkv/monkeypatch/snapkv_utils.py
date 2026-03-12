@@ -35,39 +35,79 @@ class SnapKVCluster():
         self.kernel_size = kernel_size
         self.pooling = pooling
 
-    def update_kv(self, key_states, query_states, value_states, attention_mask, num_key_value_groups):
-        # check if prefix phase
+    def get_last_sentence_length(self, input_ids, tokenizer):
+        sentence_end_tokens = set()
+        
+        for punct in ['.', '!', '?', '。', '！', '？', '；', ';', '\n']:
+            token_id = tokenizer.convert_tokens_to_ids(punct)
+            if token_id != tokenizer.unk_token_id:
+                sentence_end_tokens.add(token_id)
+        
+        if tokenizer.eos_token_id is not None:
+            sentence_end_tokens.add(tokenizer.eos_token_id)
+        
+        for i in range(len(input_ids) - 1, -1, -1):
+            if input_ids[i] in sentence_end_tokens:
+                return len(input_ids) - i - 1
+        
+        return len(input_ids)
+
+    def update_kv(self, key_states, query_states, value_states, attention_mask, num_key_value_groups, input_ids=None, tokenizer=None):
         assert key_states.shape[-2] == query_states.shape[-2]
         bsz, num_heads, q_len, head_dim = query_states.shape
         if q_len < self.max_capacity_prompt:
             return key_states, value_states
-        else:
-            attn_weights = torch.matmul(query_states[..., -self.window_size:, :], key_states.transpose(2, 3)) / math.sqrt(head_dim)
-            mask = torch.full((self.window_size, self.window_size), torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
+        
+        window_sizes = torch.full((bsz,), self.window_size, dtype=torch.long, device=key_states.device)
+        
+        if input_ids is not None and tokenizer is not None:
+            for batch_idx in range(bsz):
+                last_sentence_length = self.get_last_sentence_length(input_ids[batch_idx], tokenizer)
+                window_sizes[batch_idx] = min(self.window_size, last_sentence_length)
+        
+        key_states_list = []
+        value_states_list = []
+        
+        for batch_idx in range(bsz):
+            window_size = window_sizes[batch_idx].item()
+            
+            key_states_batch = key_states[batch_idx:batch_idx+1]
+            query_states_batch = query_states[batch_idx:batch_idx+1]
+            value_states_batch = value_states[batch_idx:batch_idx+1]
+            
+            attn_weights = torch.matmul(query_states_batch[..., -window_size:, :], key_states_batch.transpose(2, 3)) / math.sqrt(head_dim)
+            mask = torch.full((window_size, window_size), torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
             mask_cond = torch.arange(mask.size(-1), device=attn_weights.device)
             mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
             mask = mask.to(attn_weights.device)
-            attention_mask = mask[None, None, :, :]
+            attention_mask_batch = mask[None, None, :, :]
 
-            attn_weights[:, :, -self.window_size:, -self.window_size:] += attention_mask
+            attn_weights[:, :, -window_size:, -window_size:] += attention_mask_batch
 
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-            attn_weights_sum = attn_weights[:, :, -self.window_size:, : -self.window_size].sum(dim = -2)
+            attn_weights_sum = attn_weights[:, :, -window_size:, : -window_size].sum(dim = -2)
             if self.pooling == 'avgpool':
                 attn_cache = F.avg_pool1d(attn_weights_sum, kernel_size = self.kernel_size, padding=self.kernel_size//2, stride=1)
             elif self.pooling == 'maxpool':
                 attn_cache = F.max_pool1d(attn_weights_sum, kernel_size = self.kernel_size, padding=self.kernel_size//2, stride=1)
             else:
                 raise ValueError('Pooling method not supported')
-            indices = attn_cache.topk(self.max_capacity_prompt - self.window_size, dim=-1).indices
+            indices = attn_cache.topk(self.max_capacity_prompt - window_size, dim=-1).indices
             indices = indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
-            k_past_compress = key_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
-            v_past_compress = value_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
-            k_cur = key_states[:, :, -self.window_size:, :]
-            v_cur = value_states[:, :, -self.window_size:, :]
-            key_states = torch.cat([k_past_compress, k_cur], dim = 2)
-            value_states = torch.cat([v_past_compress, v_cur], dim = 2)
-            return key_states, value_states
+            k_past_compress = key_states_batch[:, :, :-window_size, :].gather(dim = 2, index = indices)
+            v_past_compress = value_states_batch[:, :, :-window_size, :].gather(dim = 2, index = indices)
+            k_cur = key_states_batch[:, :, -window_size:, :]
+            v_cur = value_states_batch[:, :, -window_size:, :]
+            key_states_batch = torch.cat([k_past_compress, k_cur], dim = 2)
+            value_states_batch = torch.cat([v_past_compress, v_cur], dim = 2)
+            
+            key_states_list.append(key_states_batch)
+            value_states_list.append(value_states_batch)
+        
+        key_states = torch.cat(key_states_list, dim=0)
+        value_states = torch.cat(value_states_list, dim=0)
+        
+        return key_states, value_states
 
 def init_snapkv(self):
     if not hasattr(self, "kv_cluster"):

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Any
 import warnings
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.models.llama.modeling_llama import (
@@ -24,6 +24,8 @@ def llama_flash_attn2_forward(
     past_key_value: Optional[Cache] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
+    input_ids: Optional[torch.LongTensor] = None,
+    tokenizer: Optional[Any] = None,
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     # [SnapKV] register kv_cluster
@@ -83,7 +85,7 @@ def llama_flash_attn2_forward(
         # print('key_states.shape:', key_states.shape)
         if key_states.shape[-2] == kv_seq_len: # [SnapKV] add kv_cluster
             self.kv_seq_len = kv_seq_len # [SnapKV] register kv_seq_len
-            key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states, attention_mask, self.num_key_value_groups)
+            key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states, attention_mask, self.num_key_value_groups, input_ids, tokenizer)
             past_key_value.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
         else:
             self.kv_seq_len += q_len
