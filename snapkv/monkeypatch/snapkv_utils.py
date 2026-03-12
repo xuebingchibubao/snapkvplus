@@ -48,7 +48,14 @@ class SnapKVCluster():
         
         for i in range(len(input_ids) - 1, -1, -1):
             if input_ids[i] in sentence_end_tokens:
-                return len(input_ids) - i - 1
+                last_sentence_ids = input_ids[i+1:]
+                last_sentence_text = tokenizer.decode(last_sentence_ids, skip_special_tokens=True)
+                print(f"[SnapKV Debug] Found sentence separator at position {i}")
+                print(f"[SnapKV Debug] Last sentence text: '{last_sentence_text}'")
+                print(f"[SnapKV Debug] Last sentence token length: {len(last_sentence_ids)}")
+                return len(last_sentence_ids)
+        
+        print(f"[SnapKV Debug] No sentence separator found, using full prompt length: {len(input_ids)}")
         return len(input_ids)
 
     def update_kv(self, key_states, query_states, value_states, attention_mask, num_key_value_groups, self_attn=None):
@@ -70,7 +77,9 @@ class SnapKVCluster():
         if input_ids is not None and tokenizer is not None:
             for batch_idx in range(bsz):
                 last_sentence_length = self.get_last_sentence_length(input_ids[batch_idx], tokenizer)
-                window_sizes[batch_idx] = min(self.window_size, last_sentence_length)
+                actual_window_size = min(self.window_size, last_sentence_length)
+                window_sizes[batch_idx] = actual_window_size
+                print(f"[SnapKV Debug] Batch {batch_idx}: Fixed window_size={self.window_size}, Last sentence length={last_sentence_length}, Actual window_size={actual_window_size}")
         key_states_list = []
         value_states_list = []
         
