@@ -49,7 +49,6 @@ class SnapKVCluster():
         for i in range(len(input_ids) - 1, -1, -1):
             if input_ids[i] in sentence_end_tokens:
                 return len(input_ids) - i - 1
-        
         return len(input_ids)
 
     def update_kv(self, key_states, query_states, value_states, attention_mask, num_key_value_groups, self_attn=None):
@@ -72,7 +71,6 @@ class SnapKVCluster():
             for batch_idx in range(bsz):
                 last_sentence_length = self.get_last_sentence_length(input_ids[batch_idx], tokenizer)
                 window_sizes[batch_idx] = min(self.window_size, last_sentence_length)
-        
         key_states_list = []
         value_states_list = []
         
