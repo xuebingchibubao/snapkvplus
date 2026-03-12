@@ -52,13 +52,21 @@ class SnapKVCluster():
         
         return len(input_ids)
 
-    def update_kv(self, key_states, query_states, value_states, attention_mask, num_key_value_groups, input_ids=None, tokenizer=None):
+    def update_kv(self, key_states, query_states, value_states, attention_mask, num_key_value_groups, self_attn=None):
         assert key_states.shape[-2] == query_states.shape[-2]
         bsz, num_heads, q_len, head_dim = query_states.shape
         if q_len < self.max_capacity_prompt:
             return key_states, value_states
         
         window_sizes = torch.full((bsz,), self.window_size, dtype=torch.long, device=key_states.device)
+        
+        input_ids = None
+        tokenizer = None
+        if self_attn is not None:
+            if hasattr(self_attn, 'snapkv_input_ids'):
+                input_ids = self_attn.snapkv_input_ids
+            if hasattr(self_attn, 'snapkv_tokenizer'):
+                tokenizer = self_attn.snapkv_tokenizer
         
         if input_ids is not None and tokenizer is not None:
             for batch_idx in range(bsz):
@@ -125,3 +133,7 @@ def init_snapkv(self):
         kernel_size = self.config.kernel_size,
         pooling = self.config.pooling
         )
+    if not hasattr(self, 'snapkv_tokenizer'):
+        self.snapkv_tokenizer = None
+    if not hasattr(self, 'snapkv_input_ids'):
+        self.snapkv_input_ids = None

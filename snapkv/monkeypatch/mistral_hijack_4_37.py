@@ -2,7 +2,7 @@ import inspect
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Optional, Tuple, Union, Any
+from typing import List, Optional, Tuple, Union
 import warnings
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.models.mistral.modeling_mistral import (
@@ -30,8 +30,6 @@ def mistral_flash_attn2_forward(
     past_key_value: Optional[Cache] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
-    input_ids: Optional[torch.LongTensor] = None,
-    tokenizer: Optional[Any] = None,
     **kwargs,
 ):
     # [SnapKV] register kv_cluster
@@ -128,7 +126,7 @@ def mistral_flash_attn2_forward(
         cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
         if key_states.shape[-2] >= kv_seq_len: # [SnapKV] add kv_cluster
             self.kv_seq_len = kv_seq_len
-            key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states, attention_mask, self.num_key_value_groups, input_ids, tokenizer)
+            key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states, attention_mask, self.num_key_value_groups, self)
             past_key_value.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
         else:
             self.kv_seq_len += q_len
