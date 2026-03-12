@@ -5,6 +5,9 @@ import torch.nn.functional as F
 import torch.nn as nn
 import math
 
+
+_snapkv_debug_printed = False
+
 # perform qk calculation and get indices
 # this version will not update in inference mode
 
@@ -38,19 +41,27 @@ class SnapKVCluster():
     def get_last_sentence_length(self, input_ids, tokenizer):
         sentence_end_tokens = set()
         
+        punct_tokens = {}
         for punct in ['.', '!', '?', '。', '！', '？', '；', ';', '\n']:
             token_id = tokenizer.convert_tokens_to_ids(punct)
+            punct_tokens[punct] = token_id
             if token_id != tokenizer.unk_token_id:
                 sentence_end_tokens.add(token_id)
         
         if tokenizer.eos_token_id is not None:
             sentence_end_tokens.add(tokenizer.eos_token_id)
+            punct_tokens['<EOS>'] = tokenizer.eos_token_id
+        
+        print(f"[SnapKV Debug] Punctuation token IDs: {punct_tokens}")
+        print(f"[SnapKV Debug] Sentence end tokens set: {sentence_end_tokens}")
+        print(f"[SnapKV Debug] Last 10 tokens in input_ids: {input_ids[-10:].tolist()}")
+        print(f"[SnapKV Debug] Last 10 tokens decoded: {tokenizer.decode(input_ids[-10:], skip_special_tokens=True)}")
         
         for i in range(len(input_ids) - 1, -1, -1):
             if input_ids[i] in sentence_end_tokens:
                 last_sentence_ids = input_ids[i+1:]
                 last_sentence_text = tokenizer.decode(last_sentence_ids, skip_special_tokens=True)
-                print(f"[SnapKV Debug] Found sentence separator at position {i}")
+                print(f"[SnapKV Debug] Found sentence separator at position {i}, token_id={input_ids[i]}")
                 print(f"[SnapKV Debug] Last sentence text: '{last_sentence_text}'")
                 print(f"[SnapKV Debug] Last sentence token length: {len(last_sentence_ids)}")
                 return len(last_sentence_ids)
@@ -75,11 +86,14 @@ class SnapKVCluster():
                 tokenizer = self_attn.snapkv_tokenizer
         
         if input_ids is not None and tokenizer is not None:
+            global _snapkv_debug_printed
             for batch_idx in range(bsz):
                 last_sentence_length = self.get_last_sentence_length(input_ids[batch_idx], tokenizer)
                 actual_window_size = min(self.window_size, last_sentence_length)
                 window_sizes[batch_idx] = actual_window_size
-                print(f"[SnapKV Debug] Batch {batch_idx}: Fixed window_size={self.window_size}, Last sentence length={last_sentence_length}, Actual window_size={actual_window_size}")
+                if not _snapkv_debug_printed:
+                    print(f"[SnapKV Debug] Batch {batch_idx}: Fixed window_size={self.window_size}, Last sentence length={last_sentence_length}, Actual window_size={actual_window_size}")
+            _snapkv_debug_printed = True
         key_states_list = []
         value_states_list = []
         
