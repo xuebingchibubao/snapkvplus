@@ -11,34 +11,9 @@ from transformers.models.llama.modeling_llama import (
 from transformers.utils import (
     logging,
 )
-from snapkv.monkeypatch.snapkv_utils import init_snapkv, get_last_sentence_length
+from snapkv.monkeypatch.snapkv_utils import init_snapkv
 
 logger = logging.get_logger(__name__)
-
-def get_input_text(self, hidden_states):
-    """
-    Attempt to retrieve input text from the model for sentence splitting.
-    This is a heuristic approach - tries to get text from model's internal state.
-    """
-    try:
-        if hasattr(self, 'model') and hasattr(self.model, 'embed_tokens'):
-            input_ids = None
-            if hasattr(self, '_last_input_ids'):
-                input_ids = self._last_input_ids
-            if input_ids is not None and input_ids.numel() > 0:
-                tokenizer = getattr(self, '_tokenizer', None)
-                if tokenizer is not None:
-                    text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
-                    return text
-        return None
-    except Exception:
-        return None
-
-def set_input_ids_for_layer(self, input_ids):
-    """
-    Store input_ids for later use in sentence splitting.
-    """
-    self._last_input_ids = input_ids
 
 # https://github.com/huggingface/transformers/blob/v4.37-release/src/transformers/models/llama/modeling_llama.py
 def llama_flash_attn2_forward(
@@ -53,14 +28,6 @@ def llama_flash_attn2_forward(
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     # [SnapKV] register kv_cluster
     init_snapkv(self)
-    
-    # [SnapKV] Sentence splitting: compute last sentence length at layer 0 and share across all layers
-    if self.layer_idx == 0:
-        input_text = get_input_text(self, hidden_states)
-        if input_text is not None:
-            last_sentence_len = get_last_sentence_length(input_text)
-            self.kv_cluster.last_sentence_len = last_sentence_len
-    
     # LlamaFlashAttention2 attention does not support output_attentions
     if "padding_mask" in kwargs:
         warnings.warn(
@@ -171,9 +138,7 @@ def llama_flash_attn2_forward(
 def prepare_inputs_for_generation_llama(
     self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
 ):
-    # [SnapKV] Reset kv_seq_len at the start of generation
-    # Note: last_sentence_len should be set to model.config.last_sentence_len BEFORE calling generate()
-    if past_key_values is None:
+    if past_key_values is None: # [SnapKV]
         for layer in self.model.layers:
             layer.self_attn.kv_seq_len = 0
     if past_key_values is not None:

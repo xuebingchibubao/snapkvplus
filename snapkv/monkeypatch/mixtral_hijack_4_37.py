@@ -13,7 +13,7 @@ from transformers.utils import (
     logging,
     is_flash_attn_2_available,
 )
-from snapkv.monkeypatch.snapkv_utils import init_snapkv, get_last_sentence_length
+from snapkv.monkeypatch.snapkv_utils import init_snapkv
 
 logger = logging.get_logger(__name__)
 
@@ -34,13 +34,6 @@ def mixtral_flash_attn2_forward(
 ):
     # [SnapKV] register kv_cluster
     init_snapkv(self)
-    
-    # [SnapKV] Sentence splitting: get last_sentence_len from config at layer 0
-    if self.layer_idx == 0:
-        config_last_sentence_len = getattr(self.config, 'last_sentence_len', 0)
-        if config_last_sentence_len > 0:
-            self.kv_cluster.last_sentence_len = config_last_sentence_len
-    
     if "padding_mask" in kwargs:
         warnings.warn(
             "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
@@ -190,8 +183,6 @@ def mixtral_flash_attn2_forward(
 def prepare_inputs_for_generation_mixtral(
     self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
 ):
-    # [SnapKV] Reset kv_seq_len at the start of generation
-    # Note: last_sentence_len should be set to model.config.last_sentence_len BEFORE calling generate()
     if past_key_values is None: # [SnapKV]
         for layer in self.model.layers:
             layer.self_attn.kv_seq_len = 0
