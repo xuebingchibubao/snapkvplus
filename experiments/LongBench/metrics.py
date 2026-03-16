@@ -1,13 +1,15 @@
 import re
 import string
 
-import jieba
-from fuzzywuzzy import fuzz
 import difflib
 
 from typing import List
 from collections import Counter
-from rouge import Rouge
+
+try:
+    from fuzzywuzzy import fuzz
+except Exception:
+    fuzz = None
 
 def normalize_answer(s):
     """Lower text and remove punctuation, articles and extra whitespace."""
@@ -84,7 +86,9 @@ def code_sim_score(prediction, ground_truth, **kwargs):
         if ('`' not in line) and ('#' not in line) and ('//' not in line):
             prediction = line
             break
-    return (fuzz.ratio(prediction, ground_truth) / 100)
+    if fuzz is not None:
+        return (fuzz.ratio(prediction, ground_truth) / 100)
+    return difflib.SequenceMatcher(None, prediction, ground_truth).ratio()
 
 def classification_score(prediction, ground_truth, **kwargs):
     em_match_list = []
@@ -102,6 +106,8 @@ def classification_score(prediction, ground_truth, **kwargs):
     return score
     
 def rouge_score(prediction, ground_truth, **kwargs):
+    from rouge import Rouge
+
     rouge = Rouge()
     try:
         scores = rouge.get_scores([prediction], [ground_truth], avg=True)
@@ -110,6 +116,8 @@ def rouge_score(prediction, ground_truth, **kwargs):
     return scores["rouge-l"]["f"]
 
 def rouge_zh_score(prediction, ground_truth, **kwargs):
+    import jieba
+
     prediction = " ".join(list(jieba.cut(prediction, cut_all=False)))
     ground_truth = " ".join(list(jieba.cut(ground_truth, cut_all=False))) 
     score = rouge_score(prediction, ground_truth)
@@ -135,6 +143,8 @@ def qa_f1_score(prediction, ground_truth, **kwargs):
 
 
 def qa_f1_zh_score(prediction, ground_truth, **kwargs):
+    import jieba
+
     prediction_tokens = list(jieba.cut(prediction, cut_all=False))
     ground_truth_tokens = list(jieba.cut(ground_truth, cut_all=False))
     prediction_tokens = [normalize_zh_answer(token) for token in prediction_tokens]

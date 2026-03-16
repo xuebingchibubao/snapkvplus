@@ -2,6 +2,7 @@ import os
 import json
 import argparse
 import numpy as np
+from pathlib import Path
 
 from metrics import (
     qa_f1_score,
@@ -38,6 +39,8 @@ dataset2metric = {
     "lcc": code_sim_score,
     "repobench-p": code_sim_score,
 }
+
+BASE_DIR = Path(__file__).resolve().parent
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
@@ -78,9 +81,13 @@ if __name__ == '__main__':
     args = parse_args()
     scores = dict()
     if args.e:
-        path = f"pred_e/{args.model}/"
+        path = BASE_DIR / "pred_e" / args.model
     else:
-        path = f"pred_e/{args.model}/"
+        path = BASE_DIR / "pred" / args.model
+
+    if not path.exists():
+        raise FileNotFoundError(f"Prediction directory not found: {path}")
+
     all_files = os.listdir(path)
     print("Evaluating on:", all_files)
     for filename in all_files:
@@ -88,7 +95,7 @@ if __name__ == '__main__':
             continue
         predictions, answers, lengths = [], [], []
         dataset = filename.split('.')[0]
-        with open(f"{path}{filename}", "r", encoding="utf-8") as f:
+        with open(path / filename, "r", encoding="utf-8") as f:
             for line in f:
                 data = json.loads(line)
                 predictions.append(data["pred"])
@@ -106,11 +113,14 @@ if __name__ == '__main__':
         # if dataset == 'qasper':
         #     scores[dataset + '_e'] = score_e
     if args.e:
-        out_path = f"H2O/results/{args.model}/result.json"
+        out_dir = BASE_DIR / "results" / args.model
+        out_path = out_dir / "result_e.json"
     else:
-        out_path = f"H2O/results/{args.model}/result.json"
+        out_dir = BASE_DIR / "results" / args.model
+        out_path = out_dir / "result.json"
         # out_path_e = f"pred/{args.model}/result_e.json"
         # with open(out_path_e, "w") as f:
         #     json.dump(score_e, f, ensure_ascii=False, indent=4)
+    out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(scores, f, ensure_ascii=False, indent=4)

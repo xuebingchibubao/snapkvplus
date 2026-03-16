@@ -13,7 +13,7 @@ from transformers.utils import (
     logging,
     is_flash_attn_2_available,
 )
-from snapkv.monkeypatch.snapkv_utils import init_snapkv
+from snapkv.monkeypatch.snapkv_utils import cache_snapkv_prompt_metadata, init_snapkv
 
 logger = logging.get_logger(__name__)
 
@@ -123,7 +123,14 @@ def mixtral_flash_attn2_forward(
         # key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
         if key_states.shape[-2] == kv_seq_len: # [SnapKV] add kv_cluster
             self.kv_seq_len = kv_seq_len
-            key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states, attention_mask, self.num_key_value_groups)
+            key_states_compress, value_states_compress = self.kv_cluster.update_kv(
+                key_states,
+                query_states,
+                value_states,
+                attention_mask,
+                self.num_key_value_groups,
+                sentence_metadata=getattr(self, "snapkv_prompt_metadata", None),
+            )
             past_key_value.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
         else:
             self.kv_seq_len += q_len
@@ -186,6 +193,7 @@ def prepare_inputs_for_generation_mixtral(
     if past_key_values is None: # [SnapKV]
         for layer in self.model.layers:
             layer.self_attn.kv_seq_len = 0
+        cache_snapkv_prompt_metadata(self, input_ids, attention_mask)
     # Omit tokens covered by past_key_values
     if past_key_values is not None:
         if isinstance(past_key_values, Cache):
