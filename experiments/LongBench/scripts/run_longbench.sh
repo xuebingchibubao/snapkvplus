@@ -8,7 +8,7 @@ MODEL_NAME="${MODEL_NAME:-mistral-7B-instruct-v0.2}"
 MODEL_PATH="${MODEL_PATH:-/userhome/models/Mistral-7B-Instruct-v0.2}"
 DATA_ROOT="${DATA_ROOT:-/userhome/datasets/LongBench}"
 COMPRESS_ARGS_PATH="${COMPRESS_ARGS_PATH:-ablation_c4096_w32_k7_maxpool.json}"
-DATASET_NAME="${DATASET_NAME:-qasper}"
+DATASET_NAME="${DATASET_NAME:-all}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 cd "${LONG_BENCH_DIR}"

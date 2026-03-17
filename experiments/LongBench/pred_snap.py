@@ -14,6 +14,15 @@ from snapkv.monkeypatch.snapkv_utils import bind_tokenizer_to_model
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = BASE_DIR / "config"
+LONG_BENCH_DATASETS = [
+    "narrativeqa", "qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "musique",
+    "gov_report", "qmsum", "multi_news", "trec", "triviaqa", "samsum",
+    "passage_count", "passage_retrieval_en", "lcc", "repobench-p",
+]
+LONG_BENCH_E_DATASETS = [
+    "qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news",
+    "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p",
+]
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
@@ -23,11 +32,51 @@ def parse_args(args=None):
         "mistral-7B-instruct-v0.2", "mistral-7B-instruct-v0.1", "llama-2-7B-32k-instruct", "mixtral-8x7B-instruct-v0.1","lwm-text-chat-1m", "lwm-text-1m"])
     parser.add_argument('--compress_args_path', type=str, default=None, help="Path to the compress args")
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
-    parser.add_argument('--dataset', type=str, default='qasper', help="Dataset to evaluate on")
+    parser.add_argument(
+        '--dataset',
+        type=str,
+        default='all',
+        help="Dataset to evaluate on. Use 'all' to run the full suite, or provide a comma-separated list.",
+    )
     parser.add_argument('--model-path-override', type=str, default=None, help="Use a local model path instead of config/model2path.json")
-    parser.add_argument('--data-root', type=str, default=None, help="Local LongBench data root for offline runs")
-    parser.add_argument('--local-files-only', action='store_true', help="Load model/tokenizer using only local files")
+    parser.add_argument(
+        '--data-root',
+        type=str,
+        default=os.environ.get("LONG_BENCH_DATA_ROOT"),
+        help="Local LongBench data root. Defaults to LONG_BENCH_DATA_ROOT when set.",
+    )
+    parser.add_argument(
+        '--local-files-only',
+        dest='local_files_only',
+        action='store_true',
+        help="Load model/tokenizer using only local files (default).",
+    )
+    parser.add_argument(
+        '--allow-remote',
+        dest='local_files_only',
+        action='store_false',
+        help="Allow Hugging Face to download missing model/data files from the network.",
+    )
+    parser.set_defaults(local_files_only=True)
     return parser.parse_args(args)
+
+
+def resolve_datasets(dataset_arg, use_e=False):
+    available_datasets = LONG_BENCH_E_DATASETS if use_e else LONG_BENCH_DATASETS
+    if dataset_arg is None:
+        return available_datasets
+
+    requested = dataset_arg.strip()
+    if requested.lower() == "all":
+        return available_datasets
+
+    datasets = [name.strip() for name in requested.split(",") if name.strip()]
+    invalid_datasets = [name for name in datasets if name not in available_datasets]
+    if invalid_datasets:
+        raise ValueError(
+            f"Dataset(s) {invalid_datasets} not found. Available datasets: {available_datasets}"
+        )
+    return datasets
 
 # This is the customized building prompt for chat models
 def build_chat(tokenizer, prompt, model_name):
@@ -83,16 +132,19 @@ def get_pred_single_gpu(data, max_length, max_gen,
                         window_sizes = None,
                         max_capacity_prompts = None,
                         kernel_sizes = None,
-                        pooling = None):
+                        pooling = None,
+                        model=None,
+                        tokenizer=None):
     # device = torch.device(f'cuda:{rank}')
     # device = model.device
-    model, tokenizer = load_model_and_tokenizer(
-        model2path[model_name],
-        model_name,
-        device="cuda",
-        compress=compress,
-        local_files_only=local_files_only,
-    )
+    if model is None or tokenizer is None:
+        model, tokenizer = load_model_and_tokenizer(
+            model2path[model_name],
+            model_name,
+            device="cuda",
+            compress=compress,
+            local_files_only=local_files_only,
+        )
     device = model.device
     printed = False
     for json_obj in tqdm(data):
@@ -211,23 +263,81 @@ def _load_local_longbench_dataset(data_root, dataset_name):
     )
 
 
-def load_longbench_dataset(dataset, use_e=False, data_root=None):
+def load_longbench_dataset(dataset, use_e=False, data_root=None, local_files_only=True):
     dataset_name = f"{dataset}_e" if use_e else dataset
     if data_root:
         return _load_local_longbench_dataset(data_root, dataset_name)
+    if local_files_only:
+        raise ValueError(
+            "Local-only mode is enabled, but no LongBench data root was provided. "
+            "Please pass --data-root /path/to/LongBench or set LONG_BENCH_DATA_ROOT."
+        )
     return load_dataset('THUDM/LongBench', dataset_name, split='test')
 
 
 def load_model_and_tokenizer(path, model_name, device, compress=False, local_files_only=False):
-    if "chatglm" in model_name or "internlm" in model_name or "xgen" in model_name:
-        tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, local_files_only=local_files_only)
-        model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True, torch_dtype=torch.bfloat16, local_files_only=local_files_only).to(device)
-    elif "llama2" in model_name:
-        tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=local_files_only)
-        model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16, local_files_only=local_files_only).to(device)
-    elif "longchat" in model_name or "vicuna" in model_name:
-        if not compress:
-            model = AutoModelForCausalLM.from_pretrained(
+    try:
+        if "chatglm" in model_name or "internlm" in model_name or "xgen" in model_name:
+            tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, local_files_only=local_files_only)
+            model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True, torch_dtype=torch.bfloat16, local_files_only=local_files_only).to(device)
+        elif "llama2" in model_name:
+            tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=local_files_only)
+            model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16, local_files_only=local_files_only).to(device)
+        elif "longchat" in model_name or "vicuna" in model_name:
+            if not compress:
+                model = AutoModelForCausalLM.from_pretrained(
+                        path,
+                        torch_dtype=torch.float16,
+                        low_cpu_mem_usage=True,
+                        device_map="auto",
+                        use_cache=True,
+                        use_flash_attention_2=True,
+                        local_files_only=local_files_only
+                    )
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                        path,
+                        torch_dtype=torch.float16,
+                        low_cpu_mem_usage=True,
+                        device_map="auto",
+                        use_cache=True,
+                        use_flash_attention_2=True,
+                        local_files_only=local_files_only
+                    )
+            tokenizer = AutoTokenizer.from_pretrained(
+                path,
+                use_fast=False,
+                local_files_only=local_files_only,
+            )
+        elif "llama-2" in model_name or "lwm" in model_name:
+            if not compress:
+                model = AutoModelForCausalLM.from_pretrained(
+                        path,
+                        torch_dtype=torch.float16,
+                        low_cpu_mem_usage=True,
+                        device_map="auto",
+                        use_cache=True,
+                        use_flash_attention_2=True,
+                        local_files_only=local_files_only
+                    )
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                        path,
+                        torch_dtype=torch.float16,
+                        low_cpu_mem_usage=True,
+                        device_map="auto",
+                        use_cache=True,
+                        use_flash_attention_2=True,
+                        local_files_only=local_files_only
+                    )
+            tokenizer = AutoTokenizer.from_pretrained(
+                path,
+                use_fast=False,
+                local_files_only=local_files_only,
+            )
+        elif "mistral" in model_name:
+            if not compress:
+                model = AutoModelForCausalLM.from_pretrained(
                     path,
                     torch_dtype=torch.float16,
                     low_cpu_mem_usage=True,
@@ -236,8 +346,8 @@ def load_model_and_tokenizer(path, model_name, device, compress=False, local_fil
                     use_flash_attention_2=True,
                     local_files_only=local_files_only
                 )
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
                     path,
                     torch_dtype=torch.float16,
                     low_cpu_mem_usage=True,
@@ -246,14 +356,15 @@ def load_model_and_tokenizer(path, model_name, device, compress=False, local_fil
                     use_flash_attention_2=True,
                     local_files_only=local_files_only
                 )
-        tokenizer = AutoTokenizer.from_pretrained(
-            path,
-            use_fast=False,
-            local_files_only=local_files_only,
-        )
-    elif "llama-2" in model_name or "lwm" in model_name:
-        if not compress:
-            model = AutoModelForCausalLM.from_pretrained(
+            tokenizer = AutoTokenizer.from_pretrained(
+                path,
+                padding_side="right",
+                use_fast=False,
+                local_files_only=local_files_only,
+            )
+        elif "mixtral" in model_name:
+            if not compress:
+                model = AutoModelForCausalLM.from_pretrained(
                     path,
                     torch_dtype=torch.float16,
                     low_cpu_mem_usage=True,
@@ -262,8 +373,8 @@ def load_model_and_tokenizer(path, model_name, device, compress=False, local_fil
                     use_flash_attention_2=True,
                     local_files_only=local_files_only
                 )
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
                     path,
                     torch_dtype=torch.float16,
                     low_cpu_mem_usage=True,
@@ -272,67 +383,21 @@ def load_model_and_tokenizer(path, model_name, device, compress=False, local_fil
                     use_flash_attention_2=True,
                     local_files_only=local_files_only
                 )
-        tokenizer = AutoTokenizer.from_pretrained(
-            path,
-            use_fast=False,
-            local_files_only=local_files_only,
-        )
-    elif "mistral" in model_name:
-        if not compress:
-            model = AutoModelForCausalLM.from_pretrained(
+            tokenizer = AutoTokenizer.from_pretrained(
                 path,
-                torch_dtype=torch.float16,
-                low_cpu_mem_usage=True,
-                device_map="auto",
-                use_cache=True,
-                use_flash_attention_2=True,
-                local_files_only=local_files_only
+                # padding_side="right",
+                # use_fast=False,
+                local_files_only=local_files_only,
             )
         else:
-            model = AutoModelForCausalLM.from_pretrained(
-                path,
-                torch_dtype=torch.float16,
-                low_cpu_mem_usage=True,
-                device_map="auto",
-                use_cache=True,
-                use_flash_attention_2=True,
-                local_files_only=local_files_only
-            )
-        tokenizer = AutoTokenizer.from_pretrained(
-            path,
-            padding_side="right",
-            use_fast=False,
-            local_files_only=local_files_only,
-        )
-    elif "mixtral" in model_name:
-        if not compress:
-            model = AutoModelForCausalLM.from_pretrained(
-                path,
-                torch_dtype=torch.float16,
-                low_cpu_mem_usage=True,
-                device_map="auto",
-                use_cache=True,
-                use_flash_attention_2=True,
-                local_files_only=local_files_only
-            )
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                path,
-                torch_dtype=torch.float16,
-                low_cpu_mem_usage=True,
-                device_map="auto",
-                use_cache=True,
-                use_flash_attention_2=True,
-                local_files_only=local_files_only
-            )
-        tokenizer = AutoTokenizer.from_pretrained(
-            path,
-            # padding_side="right",
-            # use_fast=False,
-            local_files_only=local_files_only,
-        )
-    else:
-        raise ValueError(f"Model {model_name} not supported!")
+            raise ValueError(f"Model {model_name} not supported!")
+    except Exception as exc:
+        if local_files_only:
+            raise RuntimeError(
+                f"Failed to load model '{model_name}' locally from '{path}'. "
+                "Please provide a local directory with --model-path-override, or pre-download the model into the local Hugging Face cache."
+            ) from exc
+        raise
     model = bind_tokenizer_to_model(model.eval(), tokenizer)
     return model, tokenizer
 
@@ -346,19 +411,11 @@ if __name__ == '__main__':
     model2maxlen = json.load(open(CONFIG_DIR / "model2maxlen.json", "r"))
     # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model_name = args.model
+    if model_name is None:
+        raise ValueError("--model is required")
     # define your model
     max_length = model2maxlen[model_name]
-    if args.e:
-        datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", \
-            "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
-    else:
-        datasets = ["narrativeqa", "qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "musique", \
-            "gov_report", "qmsum", "multi_news", "trec", "triviaqa", "samsum", \
-            "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
-
-    # check if args dataset in datasets
-    if args.dataset not in datasets:
-        raise ValueError(f"Dataset {args.dataset} not found in datasets")
+    datasets = resolve_datasets(args.dataset, use_e=args.e)
     # we design specific prompt format and max generation length for each task, feel free to modify them to optimize model output
     dataset2prompt = json.load(open(CONFIG_DIR / "dataset2prompt.json", "r"))
     dataset2maxlen = json.load(open(CONFIG_DIR / "dataset2maxlen.json", "r"))
@@ -383,43 +440,60 @@ if __name__ == '__main__':
     if args.model_path_override:
         model2path[model_name] = args.model_path_override
 
-    if args.e:
-        data = load_longbench_dataset(dataset, use_e=True, data_root=args.data_root)
-        if not os.path.exists(f"pred_e/{write_model_name}"):
-            os.makedirs(f"pred_e/{write_model_name}")
-        out_path = f"pred_e/{write_model_name}/{dataset}.jsonl"
-    else:
-        data = load_longbench_dataset(dataset, use_e=False, data_root=args.data_root)
-        if not os.path.exists(f"pred/{write_model_name}"):
-            os.makedirs(f"pred/{write_model_name}")
-        out_path = f"pred/{write_model_name}/{dataset}.jsonl"
-    prompt_format = dataset2prompt[dataset]
-    max_gen = dataset2maxlen[dataset]
-    data_all = [data_sample for data_sample in data]
-    if compress_args is not None:
-        get_pred_single_gpu(
-            data_all,
-            max_length,
-            max_gen,
-            prompt_format,
+    model, tokenizer = load_model_and_tokenizer(
+        model2path[model_name],
+        model_name,
+        device="cuda",
+        compress=compress,
+        local_files_only=args.local_files_only,
+    )
+
+    output_root = BASE_DIR / ("pred_e" if args.e else "pred") / write_model_name
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    for index, dataset in enumerate(datasets, start=1):
+        print(f"[{index}/{len(datasets)}] Running dataset: {dataset}")
+        data = load_longbench_dataset(
             dataset,
-            model_name,
-            model2path,
-            out_path,
-            compress,
-            local_files_only=args.local_files_only,
-            **compress_args,
-        )
-    else:
-        get_pred_single_gpu(
-            data_all,
-            max_length,
-            max_gen,
-            prompt_format,
-            dataset,
-            model_name,
-            model2path,
-            out_path,
-            compress,
+            use_e=args.e,
+            data_root=args.data_root,
             local_files_only=args.local_files_only,
         )
+        out_path = output_root / f"{dataset}.jsonl"
+        if out_path.exists():
+            out_path.unlink()
+
+        prompt_format = dataset2prompt[dataset]
+        max_gen = dataset2maxlen[dataset]
+        data_all = [data_sample for data_sample in data]
+        if compress_args is not None:
+            get_pred_single_gpu(
+                data_all,
+                max_length,
+                max_gen,
+                prompt_format,
+                dataset,
+                model_name,
+                model2path,
+                out_path,
+                compress,
+                local_files_only=args.local_files_only,
+                model=model,
+                tokenizer=tokenizer,
+                **compress_args,
+            )
+        else:
+            get_pred_single_gpu(
+                data_all,
+                max_length,
+                max_gen,
+                prompt_format,
+                dataset,
+                model_name,
+                model2path,
+                out_path,
+                compress,
+                local_files_only=args.local_files_only,
+                model=model,
+                tokenizer=tokenizer,
+            )
