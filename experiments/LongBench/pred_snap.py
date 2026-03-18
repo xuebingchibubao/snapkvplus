@@ -31,6 +31,13 @@ def parse_args(args=None):
         "internlm-7b-8k", "chatglm2-6b", "chatglm2-6b-32k", "chatglm3-6b-32k", "vicuna-v1.5-7b-16k",
         "mistral-7B-instruct-v0.2", "mistral-7B-instruct-v0.1", "llama-2-7B-32k-instruct", "mixtral-8x7B-instruct-v0.1","lwm-text-chat-1m", "lwm-text-1m"])
     parser.add_argument('--compress_args_path', type=str, default=None, help="Path to the compress args")
+    parser.add_argument(
+        '--obs-window-mode',
+        type=str,
+        default='adaptive',
+        choices=['adaptive', 'fixed'],
+        help="Observation window mode. Use 'fixed' to force window_sizes as-is; default 'adaptive' keeps the current sentence-aware behavior.",
+    )
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
     parser.add_argument(
         '--dataset',
@@ -133,6 +140,7 @@ def get_pred_single_gpu(data, max_length, max_gen,
                         max_capacity_prompts = None,
                         kernel_sizes = None,
                         pooling = None,
+                        obs_window_mode = "adaptive",
                         model=None,
                         tokenizer=None):
     # device = torch.device(f'cuda:{rank}')
@@ -164,6 +172,7 @@ def get_pred_single_gpu(data, max_length, max_gen,
                 model.model.layers[i].self_attn.config.max_capacity_prompt = max_capacity_prompts[i]
                 model.model.layers[i].self_attn.config.kernel_size = kernel_sizes[i]
                 model.model.layers[i].self_attn.config.pooling = pooling
+                model.model.layers[i].self_attn.config.obs_window_mode = obs_window_mode
         ############################################################################################################
         
         prompt = prompt_format.format(**json_obj)
@@ -480,6 +489,7 @@ if __name__ == '__main__':
                 local_files_only=args.local_files_only,
                 model=model,
                 tokenizer=tokenizer,
+                obs_window_mode=args.obs_window_mode,
                 **compress_args,
             )
         else:
@@ -496,4 +506,5 @@ if __name__ == '__main__':
                 local_files_only=args.local_files_only,
                 model=model,
                 tokenizer=tokenizer,
+                obs_window_mode=args.obs_window_mode,
             )

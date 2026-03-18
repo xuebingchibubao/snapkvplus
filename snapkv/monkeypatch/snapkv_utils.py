@@ -61,30 +61,30 @@ def _split_input_ids_into_sentence_spans(tokenizer, token_ids):
     sentence_start = 0
     sentence_text = ""
     pending_boundary = None
-    trailing_whitespace_text = ""
+    sentence_has_non_whitespace = False
 
     for idx, token_id in enumerate(token_ids):
         token_text = _decode_single_token(tokenizer, token_id)
 
-        if pending_boundary is not None and not _is_whitespace_only_text(token_text):
-            sentence_spans.append((sentence_start, pending_boundary))
-            sentence_start = pending_boundary
-            sentence_text = trailing_whitespace_text
+        if pending_boundary is not None:
+            if _is_whitespace_only_text(token_text):
+                continue
+            if sentence_start < pending_boundary and sentence_has_non_whitespace:
+                sentence_spans.append((sentence_start, pending_boundary))
+            sentence_start = idx
+            sentence_text = ""
+            sentence_has_non_whitespace = False
             pending_boundary = None
-            trailing_whitespace_text = ""
 
         sentence_text += token_text
+        if not _is_whitespace_only_text(token_text):
+            sentence_has_non_whitespace = True
         if _is_sentence_boundary(sentence_text):
             pending_boundary = idx + 1
-            trailing_whitespace_text = ""
-        elif pending_boundary is not None:
-            trailing_whitespace_text += token_text
 
-    if sentence_start < len(token_ids):
-        sentence_spans.append((sentence_start, len(token_ids)))
-
-    if not sentence_spans and token_ids:
-        sentence_spans.append((0, len(token_ids)))
+    sentence_end = pending_boundary if pending_boundary is not None else len(token_ids)
+    if sentence_start < sentence_end and sentence_has_non_whitespace:
+        sentence_spans.append((sentence_start, sentence_end))
 
     return sentence_spans
 
@@ -174,19 +174,35 @@ def cache_snapkv_prompt_metadata(model, input_ids, attention_mask=None):
 
 
 class SnapKVCluster:
-    def __init__(self, window_size=64, max_capacity_prompt=256 + 64, kernel_size=5, pooling="avgpool"):
+    def __init__(
+        self,
+        window_size=64,
+        max_capacity_prompt=256 + 64,
+        kernel_size=5,
+        pooling="avgpool",
+        obs_window_mode="adaptive",
+    ):
         self.window_size = window_size
         self.max_capacity_prompt = max_capacity_prompt
         assert self.window_size > 0 and self.max_capacity_prompt > 0
         self.kernel_size = kernel_size
         self.pooling = pooling
+        self.obs_window_mode = obs_window_mode
 
-    def reset(self, window_size=64, max_capacity_prompt=256 + 64, kernel_size=5, pooling="avgpool"):
+    def reset(
+        self,
+        window_size=64,
+        max_capacity_prompt=256 + 64,
+        kernel_size=5,
+        pooling="avgpool",
+        obs_window_mode="adaptive",
+    ):
         self.window_size = window_size
         self.max_capacity_prompt = max_capacity_prompt
         assert self.window_size > 0 and self.max_capacity_prompt > 0
         self.kernel_size = kernel_size
         self.pooling = pooling
+        self.obs_window_mode = obs_window_mode
 
     def _pooling_mode(self):
         if self.pooling in {"avgpool", "avg", "sentence_avg"}:
@@ -200,6 +216,9 @@ class SnapKVCluster:
         query_start = q_len - base_window_size
         query_end = q_len
         keep_start = query_start
+
+        if self.obs_window_mode == "fixed":
+            return max(base_window_size, 1), query_start, query_end, keep_start
 
         if not sentence_metadata:
             return max(base_window_size, 1), query_start, query_end, keep_start
@@ -295,8 +314,11 @@ class SnapKVCluster:
         for start, end in sentence_spans_batch[0]:
             if end <= prefix_len:
                 candidate_spans.append((int(start), int(end)))
-            else:
+                continue
+            if start < prefix_len:
+                candidate_spans.append((int(start), int(prefix_len)))
                 break
+            break
 
         if not candidate_spans:
             return key_states[:, :, keep_start:, :], value_states[:, :, keep_start:, :]
@@ -382,9 +404,12 @@ def init_snapkv(self):
             self.config.kernel_size = 5
         if not hasattr(self.config, "pooling"):
             self.config.pooling = "avgpool"
+        if not hasattr(self.config, "obs_window_mode"):
+            self.config.obs_window_mode = "adaptive"
     self.kv_cluster = SnapKVCluster(
         window_size=self.config.window_size,
         max_capacity_prompt=self.config.max_capacity_prompt,
         kernel_size=self.config.kernel_size,
         pooling=self.config.pooling,
+        obs_window_mode=self.config.obs_window_mode,
     )

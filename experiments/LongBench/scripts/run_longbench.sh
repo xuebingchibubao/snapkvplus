@@ -10,6 +10,7 @@ DATA_ROOT="${DATA_ROOT:-/userhome/datasets/LongBench}"
 COMPRESS_ARGS_PATH="${COMPRESS_ARGS_PATH:-ablation_c4096_w32_k7_maxpool.json}"
 DATASET_NAME="${DATASET_NAME:-all}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+OBS_WINDOW_MODE="${OBS_WINDOW_MODE:-adaptive}"
 
 cd "${LONG_BENCH_DIR}"
 
@@ -21,4 +22,5 @@ python pred_snap.py \
   --data-root "${DATA_ROOT}" \
   --local-files-only \
   --dataset "${DATASET_NAME}" \
+  --obs-window-mode "${OBS_WINDOW_MODE}" \
   --compress_args_path "${COMPRESS_ARGS_PATH}"
